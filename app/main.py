@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import rag, auth
+from app.api import rag, auth, health
 from app.core.config import settings
 from app.utils.logger import setup_logger
 
@@ -24,6 +24,7 @@ app.add_middleware(
 # 라우터 등록
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(rag.router, prefix="/api/rag", tags=["rag"])
+app.include_router(health.router, prefix="/api/health", tags=["health"])
 
 @app.get("/")
 async def root():
