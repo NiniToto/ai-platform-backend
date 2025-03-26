@@ -32,9 +32,12 @@ class Settings(BaseSettings):
     # CORS 허용 도메인 목록
     @property
     def CORS_ORIGINS(self) -> List[str]:
-        origins = [self.FRONTEND_LOCAL_URL, "http://localhost:8000"]
-        if self.ENV == "production":
-            origins.append(self.FRONTEND_PROD_URL)
+        # 로컬 개발 환경과 프로덕션 URL 모두 항상 허용
+        origins = [
+            self.FRONTEND_LOCAL_URL,
+            "http://localhost:8000",
+            self.FRONTEND_PROD_URL
+        ]
         return origins
     
     class Config:
