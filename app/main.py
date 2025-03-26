@@ -13,9 +13,11 @@ app = FastAPI(
 )
 
 # CORS 설정
+# 환경에 따른 허용 도메인 목록 사용
+logger.info(f"CORS 허용 도메인: {settings.CORS_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경에서는 모든 origin 허용
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
