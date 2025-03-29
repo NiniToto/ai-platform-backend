@@ -36,7 +36,8 @@ class Settings(BaseSettings):
         origins = [
             self.FRONTEND_LOCAL_URL,
             "http://localhost:8000",
-            self.FRONTEND_PROD_URL
+            self.FRONTEND_PROD_URL,
+            "https://8cc7-39-118-216-92.ngrok-free.app"  # 현재 사용 중인 ngrok URL
         ]
         return origins
     
