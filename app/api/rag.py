@@ -130,12 +130,14 @@ class RAGRouter:
         async def ask(request: ChatRequest):
             """채팅 질문에 대한 답변을 생성합니다."""
             try:
-                logger.info(f"채팅 요청: {request.query}")
                 
                 if not self.rag_service:
                     raise HTTPException(status_code=503, detail="RAG 서비스가 초기화되지 않았습니다.")
                 
-                response = self.rag_service.query(request.query)
+                response = self.rag_service.query(
+                    query=request.query
+                )
+                
                 return ChatResponse(
                     answer=response,
                     model=request.model

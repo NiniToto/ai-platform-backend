@@ -1,7 +1,7 @@
 import os
 import json
 import pdfplumber
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from llama_index.core import Settings, VectorStoreIndex, SimpleDirectoryReader
 from llama_index.llms.ollama import Ollama
@@ -25,10 +25,15 @@ from functools import lru_cache
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import HTTPException
+from app.services.prompt_service import PromptService
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class RAGService:
-    def __init__(self, model: str):
+    def __init__(self, model: str = "Llama-3.1"):
         self.model_name = model
+        self.prompt_service = PromptService()
         self.executor = ThreadPoolExecutor(max_workers=4)  # 스레드 풀 생성
         
         # 락 초기화
@@ -49,7 +54,6 @@ class RAGService:
             trust_remote_code=True,
             device="cuda"  # GPU 사용
         )
-        self.query_engine = None
         
         # 파일 저장 디렉토리 설정
         self.base_dir = "uploaded_files"
@@ -69,6 +73,10 @@ class RAGService:
         self.embed_model = None
         self.node_parser = None
         self.index = None
+        self.query_engine = None
+        
+        # 인덱스와 쿼리 엔진 초기화
+        self._load_or_create_index()
         
         # 청크 데이터 정리 (비동기로 실행)
         asyncio.create_task(self._cleanup_old_chunks())
@@ -272,22 +280,28 @@ class RAGService:
                 storage_context = StorageContext.from_defaults(vector_store=vector_store)
                 self.index = VectorStoreIndex(documents, storage_context=storage_context)
 
-            # 검색기 설정 - 검색 결과 수 축소
+            # 검색기 설정 - 검색 결과 수와 모드 최적화
             retriever = VectorIndexRetriever(
                 index=self.index,
-                similarity_top_k=3,  # 검색 결과 수 축소
-                vector_store_query_mode="default"
+                similarity_top_k=3,  # 검색 결과 수 감소
+                vector_store_query_mode="default",  # 기본 모드 사용
+                filters=None
             )
             
             # 유사도 임계값 조정
-            node_postprocessors = [SimilarityPostprocessor(similarity_cutoff=0.3)]  # 임계값 상향 조정
+            node_postprocessors = [
+                SimilarityPostprocessor(similarity_cutoff=0.3)  # 임계값 상향 조정
+            ]
             
             # 쿼리 엔진 생성 - 응답 모드 최적화
             self.query_engine = RetrieverQueryEngine.from_args(
                 retriever=retriever,
                 node_postprocessors=node_postprocessors,
                 response_mode="tree_summarize",  # 응답 모드 변경
-                response_kwargs={"verbose": False}  # 상세 출력 비활성화
+                response_kwargs={
+                    "verbose": False,
+                    "response_template": "{response}"  # 응답 템플릿 설정
+                }
             )
             
             # 메모리 정리
@@ -421,17 +435,23 @@ class RAGService:
                 # 검색기 설정
                 retriever = VectorIndexRetriever(
                     index=self.index,
-                    similarity_top_k=3,
-                    vector_store_query_mode="default"
+                    similarity_top_k=3,  # 검색 결과 수 감소
+                    vector_store_query_mode="default",  # 기본 모드 사용
+                    filters=None
                 )
                 
-                node_postprocessors = [SimilarityPostprocessor(similarity_cutoff=0.3)]
+                node_postprocessors = [
+                    SimilarityPostprocessor(similarity_cutoff=0.3)  # 임계값 상향 조정
+                ]
                 
                 self.query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=node_postprocessors,
-                    response_mode="tree_summarize",
-                    response_kwargs={"verbose": False}
+                    response_mode="tree_summarize",  # 응답 모드 변경
+                    response_kwargs={
+                        "verbose": False,
+                        "response_template": "{response}"  # 응답 템플릿 설정
+                    }
                 )
                 print("쿼리 엔진 설정 완료")
             else:
@@ -441,34 +461,45 @@ class RAGService:
             print(f"문서 인덱싱 중 오류 발생: {str(e)}")
             raise
 
-    def query(self, query_text: str) -> str:
-        """질문에 대한 답변을 생성합니다."""
+    def query(self, query: str) -> str:
+        """문서에 대한 질문에 답변합니다."""
         try:
-            if not query_text:
-                raise ValueError("쿼리 텍스트가 비어있습니다.")
-            
-            # 인덱스가 없거나 문서가 없는 경우 체크
-            if not self.index or not self.metadata.get("files"):
-                raise ValueError("처리할 문서가 없습니다. 먼저 PDF 파일을 업로드해주세요.")
-            
             if not self.query_engine:
-                self._load_or_create_index()
+                raise ValueError("쿼리 엔진이 초기화되지 않았습니다.")
             
-            # 쿼리 엔진이 여전히 없는 경우
-            if not self.query_engine:
-                raise ValueError("쿼리 엔진 초기화에 실패했습니다.")
+            # 프롬프트 생성
+            structured_prompt = self.prompt_service.create_structured_prompt(query)
             
-            response = self.query_engine.query(query_text)
-            return str(response)
-        except ValueError as e:
-            print(f"쿼리 처리 중 유효성 검사 오류: {str(e)}")
-            raise HTTPException(status_code=400, detail=str(e))
+            # 문서 검색 및 답변 생성
+            logger.info(f"쿼리 실행: {query}")
+            response = self.query_engine.query(structured_prompt)
+            
+            # 답변 후처리
+            processed_response = self._post_process_response(str(response))
+            logger.info(f"답변 후처리 완료: {processed_response}")
+            
+            return processed_response
+            
         except Exception as e:
-            print(f"쿼리 처리 중 오류 발생: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"쿼리 처리 중 오류가 발생했습니다: {str(e)}")
-        finally:
-            # 메모리 정리
-            gc.collect()
+            logger.error(f"쿼리 처리 중 오류 발생: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def _post_process_response(self, response: str) -> str:
+        """답변을 후처리하여 더 구조화된 형태로 만듭니다."""
+        try:
+            # 기본 구조 추가
+            structured_response = f"""답변:
+
+{response}
+
+---
+참고: 이 답변은 업로드된 문서들을 기반으로 생성되었습니다."""
+            
+            return structured_response
+            
+        except Exception as e:
+            logger.error(f"답변 후처리 중 오류 발생: {str(e)}")
+            return response  # 후처리 실패시 원본 응답 반환
 
     def get_file_list(self) -> List[Dict]:
         """업로드된 파일 목록을 반환합니다."""
@@ -606,17 +637,23 @@ class RAGService:
                 # 검색기 재설정
                 retriever = VectorIndexRetriever(
                     index=self.index,
-                    similarity_top_k=3,
-                    vector_store_query_mode="default"
+                    similarity_top_k=3,  # 검색 결과 수 감소
+                    vector_store_query_mode="default",  # 기본 모드 사용
+                    filters=None
                 )
                 
-                node_postprocessors = [SimilarityPostprocessor(similarity_cutoff=0.3)]
+                node_postprocessors = [
+                    SimilarityPostprocessor(similarity_cutoff=0.3)  # 임계값 상향 조정
+                ]
                 
                 self.query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=node_postprocessors,
-                    response_mode="tree_summarize",
-                    response_kwargs={"verbose": False}
+                    response_mode="tree_summarize",  # 응답 모드 변경
+                    response_kwargs={
+                        "verbose": False,
+                        "response_template": "{response}"  # 응답 템플릿 설정
+                    }
                 )
                 print("쿼리 엔진 재설정 완료")
             else:
