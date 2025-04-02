@@ -16,7 +16,7 @@ class AuthService:
         self.users = {
             "admin": {
                 "username": "admin",
-                "password": pwd_context.hash("admin123"),  # 비밀번호 해시화
+                "password": pwd_context.hash("*****"),  # 비밀번호 해시화
                 "disabled": False,
                 "role": "admin"
             }
